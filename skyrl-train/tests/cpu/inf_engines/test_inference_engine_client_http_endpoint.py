@@ -6,7 +6,7 @@ but simplified to run on CPU with vLLM. Unlike the GPU version, this doesn't use
 placement groups - it creates AsyncVLLMInferenceEngine instances directly.
 
 Run with:
-uv run --isolated --extra dev --extra vllm pytest tests/cpu/inf_engines/test_inference_engine_client_http_endpoint.py -v
+uv run --isolated --extra dev --extra vllm --directory skyrl-train pytest skyrl-train/tests/cpu/inf_engines/test_inference_engine_client_http_endpoint.py -v
 """
 
 import platform
