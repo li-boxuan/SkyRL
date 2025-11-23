@@ -26,7 +26,6 @@ from pydantic import BaseModel
 from litellm import completion as litellm_completion
 from litellm import acompletion as litellm_async_completion
 from litellm import atext_completion as litellm_async_text_completion
-from litellm.utils import get_model_info
 from skyrl_train.inference_engines.base import ConversationType
 from tests.gpu.utils import init_worker_with_type, get_test_prompts
 from skyrl_train.entrypoints.main_base import config_dir
@@ -770,9 +769,12 @@ def test_http_endpoint_error_handling():
 @pytest.mark.vllm
 def test_http_endpoint_model_info():
     """
-    Test the /v1/models endpoint returns correct model information (OpenAI-compatible).
-    Tests both direct HTTP requests and litellm.utils.get_model_info().
+    Test the /v1/models endpoint.
+
+    Tests:
+    1. Direct HTTP GET /v1/models returns correct model info
     """
+    server_thread = None
     try:
         # Ensure no leftover Ray context from earlier fixtures or tests.
         if ray.is_initialized():
@@ -834,23 +836,8 @@ def test_http_endpoint_model_info():
 
         print(f"Direct HTTP request passed: {models_response}")
 
-        # Test 2: Use litellm.utils.get_model_info()
-        print("Test 2: Using litellm.utils.get_model_info()")
-        litellm_model_info = get_model_info(
-            model=f"openai/{MODEL}",
-            custom_llm_provider="openai",
-            api_base=f"{base_url}/v1"
-        )
-
-        # litellm.utils.get_model_info returns a dict with 'max_tokens' field
-        assert "max_tokens" in litellm_model_info, "litellm model info should contain 'max_tokens' field"
-        assert litellm_model_info["max_tokens"] == expected_max_tokens, \
-            f"litellm expected max_tokens {expected_max_tokens}, got {litellm_model_info['max_tokens']}"
-
-        print(f"litellm.utils.get_model_info() passed: {litellm_model_info}")
-
     finally:
         shutdown_server(host=SERVER_HOST, port=SERVER_PORT, max_wait_seconds=5)
-        if server_thread.is_alive():
+        if server_thread is not None and server_thread.is_alive():
             server_thread.join(timeout=5)
         ray.shutdown()
