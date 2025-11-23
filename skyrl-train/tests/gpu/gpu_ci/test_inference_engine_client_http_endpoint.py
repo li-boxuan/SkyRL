@@ -26,6 +26,7 @@ from pydantic import BaseModel
 from litellm import completion as litellm_completion
 from litellm import acompletion as litellm_async_completion
 from litellm import atext_completion as litellm_async_text_completion
+from litellm.utils import get_model_info
 from skyrl_train.inference_engines.base import ConversationType
 from tests.gpu.utils import init_worker_with_type, get_test_prompts
 from skyrl_train.entrypoints.main_base import config_dir
@@ -760,4 +761,96 @@ def test_http_endpoint_error_handling():
         assert r.status_code == HTTPStatus.BAD_REQUEST
 
     finally:
+        shutdown_server(host=SERVER_HOST, port=SERVER_PORT, max_wait_seconds=5)
+        if server_thread.is_alive():
+            server_thread.join(timeout=5)
+        ray.shutdown()
+
+
+@pytest.mark.vllm
+def test_http_endpoint_model_info():
+    """
+    Test the /v1/models endpoint returns correct model information (OpenAI-compatible).
+    Tests both direct HTTP requests and litellm.utils.get_model_info().
+    """
+    try:
+        # Ensure no leftover Ray context from earlier fixtures or tests.
+        if ray.is_initialized():
+            ray.shutdown()
+            time.sleep(5)
+        cfg = get_test_actor_config(num_inference_engines=1)
+        cfg.trainer.placement.colocate_all = True
+        cfg.generator.weight_sync_backend = "nccl"
+        cfg.trainer.strategy = "fsdp2"
+
+        client, _ = init_inference_engines(
+            cfg=cfg,
+            use_local=True,
+            async_engine=cfg.generator.async_engine,
+            tp_size=cfg.generator.inference_engine_tensor_parallel_size,
+            colocate_all=cfg.trainer.placement.colocate_all,
+            backend="vllm",
+            model=MODEL,
+            num_inference_engines=cfg.generator.num_inference_engines,
+            sleep_level=1,
+        )
+
+        def run_server():
+            serve(client, host=SERVER_HOST, port=SERVER_PORT, log_level="warning")
+
+        server_thread = threading.Thread(target=run_server, daemon=True)
+        server_thread.start()
+        wait_for_server_ready(host=SERVER_HOST, port=SERVER_PORT, max_wait_seconds=30)
+        base_url = f"http://{SERVER_HOST}:{SERVER_PORT}"
+
+        # Load tokenizer to get expected values
+        tokenizer = AutoTokenizer.from_pretrained(MODEL)
+        expected_max_tokens = tokenizer.model_max_length
+
+        # Test 1: Direct HTTP request to /v1/models (OpenAI-compatible endpoint)
+        print("Test 1: Direct HTTP request to /v1/models")
+        response = requests.get(f"{base_url}/v1/models")
+        assert response.status_code == HTTPStatus.OK
+        models_response = response.json()
+
+        # Verify OpenAI-compatible response format
+        assert "object" in models_response, "Response should contain 'object' field"
+        assert models_response["object"] == "list", "Object field should be 'list'"
+        assert "data" in models_response, "Response should contain 'data' field"
+        assert isinstance(models_response["data"], list), "Data field should be a list"
+        assert len(models_response["data"]) > 0, "Data list should not be empty"
+
+        # Check the first model in the list
+        model_info = models_response["data"][0]
+        assert "id" in model_info, "Model should have 'id' field"
+        assert "object" in model_info, "Model should have 'object' field"
+        assert "max_tokens" in model_info, "Model should have 'max_tokens' field"
+        assert model_info["object"] == "model", "Model object should be 'model'"
+        assert model_info["id"] == MODEL, f"Expected model name {MODEL}, got {model_info['id']}"
+        assert isinstance(model_info["max_tokens"], int), "max_tokens should be an integer"
+        assert model_info["max_tokens"] > 0, "max_tokens should be positive"
+        assert model_info["max_tokens"] == expected_max_tokens, \
+            f"Expected max_tokens {expected_max_tokens}, got {model_info['max_tokens']}"
+
+        print(f"Direct HTTP request passed: {models_response}")
+
+        # Test 2: Use litellm.utils.get_model_info()
+        print("Test 2: Using litellm.utils.get_model_info()")
+        litellm_model_info = get_model_info(
+            model=f"openai/{MODEL}",
+            custom_llm_provider="openai",
+            api_base=f"{base_url}/v1"
+        )
+
+        # litellm.utils.get_model_info returns a dict with 'max_tokens' field
+        assert "max_tokens" in litellm_model_info, "litellm model info should contain 'max_tokens' field"
+        assert litellm_model_info["max_tokens"] == expected_max_tokens, \
+            f"litellm expected max_tokens {expected_max_tokens}, got {litellm_model_info['max_tokens']}"
+
+        print(f"litellm.utils.get_model_info() passed: {litellm_model_info}")
+
+    finally:
+        shutdown_server(host=SERVER_HOST, port=SERVER_PORT, max_wait_seconds=5)
+        if server_thread.is_alive():
+            server_thread.join(timeout=5)
         ray.shutdown()

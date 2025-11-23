@@ -283,6 +283,43 @@ def create_app() -> fastapi.FastAPI:
         """
         return await handle_openai_request(raw_request, endpoint="/completions")
 
+    @app.get("/v1/models")
+    async def list_models():
+        """
+        List available models (OpenAI-compatible endpoint).
+
+        This endpoint follows the OpenAI API convention and is compatible with
+        litellm.utils.get_model_info(). It returns a list of available models.
+
+        Returns:
+            dict: Response containing:
+                - object: "list"
+                - data: List of model objects, each containing:
+                    - id: The model name
+                    - object: "model"
+                    - max_tokens: Maximum context length (tokens)
+        """
+        if _global_inference_engine_client is None:
+            error_response = ErrorResponse(
+                error=ErrorInfo(
+                    message="Inference engine client not initialized",
+                    type=HTTPStatus.INTERNAL_SERVER_ERROR.phrase,
+                    code=HTTPStatus.INTERNAL_SERVER_ERROR.value,
+                ),
+            )
+            return JSONResponse(content=error_response.model_dump(), status_code=HTTPStatus.INTERNAL_SERVER_ERROR.value)
+
+        return JSONResponse(content={
+            "object": "list",
+            "data": [
+                {
+                    "id": _global_inference_engine_client.model_name,
+                    "object": "model",
+                    "max_tokens": _global_inference_engine_client.tokenizer.model_max_length,
+                }
+            ],
+        })
+
     # Health check endpoint
     # All inference engine replicas are initialized before creating `InferenceEngineClient`, and thus
     # we can start receiving requests as soon as the FastAPI server starts
